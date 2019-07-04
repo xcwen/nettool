@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/codegangsta/cli"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/syyongx/php2go"
 )
 
 // PackageHeader x
@@ -208,16 +210,52 @@ type fileInfo struct {
 	FuncList []string
 }
 
-func genCtrl(Args []string) {
-	fset := token.NewFileSet() // positions are relative to fset
-	dir, err := ioutil.ReadDir(Args[0])
+func getCmdlist(protoDir string) []string {
+
+	cmdList := []string{}
+	dir, err := ioutil.ReadDir(protoDir)
 	if err != nil {
-		fmt.Printf("扫描文件夹出错:%s\n", dir)
+		fmt.Printf("扫描文件夹出错:%s\n", protoDir)
+		return cmdList
+	}
+
+	for _, fileinfo := range dir {
+		fileName := fileinfo.Name()
+		arr := strings.Split(fileName, ".")
+		if len(arr) == 2 {
+			base := arr[0]
+			ext := arr[1]
+			if ext == "proto" {
+				if strings.Index(base, "__") > 0 {
+					cmdList = append(cmdList, base)
+				}
+			}
+		}
+
+	}
+	return cmdList
+
+}
+
+func genCtrl(Args []string) {
+
+	cmdList := getCmdlist(Args[0])
+
+	jsondata := spew.Sdump(cmdList)
+	fmt.Printf("===%s\n", jsondata)
+	ctrlDir := Args[1]
+
+	dir, err := ioutil.ReadDir(ctrlDir)
+	if err != nil {
+		fmt.Printf("扫描文件夹出错:%s\n", ctrlDir)
 		return
 	}
+
 	fileinfo := map[string]fileInfo{}
 	for _, filename := range dir {
-		filePath := Args[0] + "/" + filename.Name()
+		filePath := ctrlDir + "/" + filename.Name()
+
+		fset := token.NewFileSet() // positions are relative to fset
 		file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
 
 		fileItem := fileInfo{}
@@ -231,28 +269,131 @@ func genCtrl(Args []string) {
 		for _, decl := range file.Decls {
 			funcDecl, ok := decl.(*ast.FuncDecl)
 			if ok {
-				if len(funcDecl.Recv.List) == 1 {
-					ctrl, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
-					if ok {
-
-						_, ok := ctrl.X.(*ast.Ident)
+				fileItem.FuncList = append(fileItem.FuncList, funcDecl.Name.Name)
+				/*
+					if len(funcDecl.Recv.List) == 1 {
+						ctrl, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
 						if ok {
-							//fmt.Printf("\"%s %s\n", indent.Name, funcDecl.Name)
-							fileItem.FuncList = append(fileItem.FuncList, funcDecl.Name.Name)
-						}
 
+							_, ok := ctrl.X.(*ast.Ident)
+							if ok {
+								//fmt.Printf("\"%s %s\n", indent.Name, funcDecl.Name)
+							}
+
+						}
 					}
-				}
+				*/
+
 				//data := spew.Sdump(funcDecl)
 
 			}
 		}
-		fileinfo[filePath] = fileItem
+		fileinfo[strings.Split(filename.Name(), ".")[0]] = fileItem
 	}
 	data, err := json.Marshal(fileinfo)
-
 	fmt.Printf(" %s\n", data)
+	//生成 代码到目标文件
+	genCtrlCode(ctrlDir, cmdList, fileinfo)
 
+}
+func genCtrlCode(ctrlDir string, cmdList []string, fileinfo map[string]fileInfo) {
+
+	for _, cmd := range cmdList {
+		arr := strings.Split(cmd, "__")
+		ctrl := arr[0]
+		action := arr[1]
+		camelAction := CamelString(action)
+		camelCtrl := CamelString(ctrl)
+		filename := ctrlDir + "/" + ctrl + ".go"
+		filedata, _ := php2go.FileGetContents(filename)
+		if filedata == "" {
+			fmt.Printf("gen %s\n", filename)
+			genCtrlBaseFile(filename, ctrl)
+		}
+		ctrlInfo, ok := fileinfo[ctrl]
+		genActionFlag := false
+		if ok {
+			if ctrlInfo.SuccFlag {
+				if !php2go.InArray(camelAction, ctrlInfo.FuncList) {
+					genActionFlag = true
+				}
+			}
+		} else {
+			genActionFlag = true
+		}
+		if genActionFlag {
+			fmt.Printf("gen action %s %s \n", filename, action)
+
+			actionStr := `
+// ` + camelAction + ` xx
+func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto. ` + camelCtrl + camelAction + `In, out *proto. ` + camelCtrl + camelAction + `Out ) (interface{}, error) {
+
+	return m.outputErr(" ` + camelCtrl + camelAction + `生成代码未实现")
+}`
+			fd, _ := os.OpenFile(filename, os.O_RDWR|os.O_APPEND, 0644)
+			fd.Write([]byte(actionStr))
+			fd.Close()
+
+		}
+
+		//ioutil.  (filename, []byte(str), 0644)
+	}
+
+}
+
+// CamelString  转驼峰 camel string, xx_yy to XxYy
+func CamelString(s string) string {
+	data := make([]byte, 0, len(s))
+	j := false
+	k := false
+	num := len(s) - 1
+	for i := 0; i <= num; i++ {
+		d := s[i]
+		if k == false && d >= 'A' && d <= 'Z' {
+			k = true
+		}
+		if d >= 'a' && d <= 'z' && (j || k == false) {
+			d = d - 32
+			j = false
+			k = true
+		}
+		if k && d == '_' && num > i && s[i+1] >= 'a' && s[i+1] <= 'z' {
+			j = true
+			continue
+		}
+		data = append(data, d)
+	}
+	return string(data[:])
+}
+
+func genCtrlBaseFile(filename string, ctrl string) {
+	camelCtrl := CamelString(ctrl)
+	str := `package controllers
+
+import (
+	"context"
+	"proto"
+
+	"github.com/TarsCloud/TarsGo/tars/util/set"
+)
+
+// ` + camelCtrl + ` x
+type ` + camelCtrl + ` struct {
+	Controller
+}
+
+// CheckLoginFlag x
+func (m *` + camelCtrl + `) CheckLoginFlag() bool {
+	return true
+}
+
+// GetNoNeedCheckLoginActionMap  x
+func (m *` + camelCtrl + `) GetNoNeedCheckLoginActionMap() *set.Set {
+	//return set.NewSet("action_name" )
+	return set.NewSet()
+}`
+
+	ioutil.WriteFile(filename, []byte(str), 0644)
 }
 
 func lsf(Args []string) {
