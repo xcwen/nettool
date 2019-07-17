@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/codegangsta/cli"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/syyongx/php2go"
 )
 
@@ -241,8 +240,8 @@ func genCtrl(Args []string) {
 
 	cmdList := getCmdlist(Args[0])
 
-	jsondata := spew.Sdump(cmdList)
-	fmt.Printf("===%s\n", jsondata)
+	//jsondata := spew.Sdump(cmdList)
+	//fmt.Printf("===%s\n", jsondata)
 	ctrlDir := Args[1]
 
 	dir, err := ioutil.ReadDir(ctrlDir)
@@ -290,8 +289,8 @@ func genCtrl(Args []string) {
 		}
 		fileinfo[strings.Split(filename.Name(), ".")[0]] = fileItem
 	}
-	data, err := json.Marshal(fileinfo)
-	fmt.Printf(" %s\n", data)
+	//data, err := json.Marshal(fileinfo)
+	//fmt.Printf(" %s\n", data)
 	//生成 代码到目标文件
 	genCtrlCode(ctrlDir, cmdList, fileinfo)
 
@@ -326,7 +325,7 @@ func genCtrlCode(ctrlDir string, cmdList []string, fileinfo map[string]fileInfo)
 
 			actionStr := `
 // ` + camelAction + ` xx
-func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto. ` + camelCtrl + camelAction + `In, out *proto. ` + camelCtrl + camelAction + `Out ) (interface{}, error) {
+func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto.` + camelCtrl + camelAction + `In, out *proto.` + camelCtrl + camelAction + `Out ) (interface{}, error) {
 
 	return m.outputErr(" ` + camelCtrl + camelAction + `生成代码未实现")
 }`
@@ -372,7 +371,7 @@ func genCtrlBaseFile(filename string, ctrl string) {
 
 import (
 	"context"
-	"proto"
+	"server/gen/proto"
 
 	"github.com/TarsCloud/TarsGo/tars/util/set"
 )
