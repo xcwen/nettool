@@ -13,14 +13,15 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/codegangsta/cli"
 	"github.com/syyongx/php2go"
+	"github.com/urfave/cli"
 )
 
 // PackageHeader x
@@ -209,36 +210,24 @@ type fileInfo struct {
 	FuncList []string
 }
 
-func getCmdlist(protoDir string) []string {
+func getCmdlist(protoDir string) map[string]string {
 
-	cmdList := []string{}
-	dir, err := ioutil.ReadDir(protoDir)
-	if err != nil {
-		fmt.Printf("扫描文件夹出错:%s\n", protoDir)
-		return cmdList
-	}
-
-	for _, fileinfo := range dir {
-		fileName := fileinfo.Name()
-		arr := strings.Split(fileName, ".")
-		if len(arr) == 2 {
-			base := arr[0]
-			ext := arr[1]
-			if ext == "proto" {
-				if strings.Index(base, "__") > 0 {
-					cmdList = append(cmdList, base)
-				}
-			}
+	cmdMap := map[string]string{}
+	data, _ := ExecShell("cd " + protoDir + " && grep __TITLE *.proto | sed  's#.proto:.*TITLE:# #' ")
+	rows := strings.Split(data, "\n")
+	for _, row := range rows {
+		items := strings.SplitN(row, " ", 2)
+		if len(items) == 2 {
+			cmdMap[items[0]] = items[1]
 		}
-
 	}
-	return cmdList
+	return cmdMap
 
 }
 
 func genCtrl(Args []string) {
 
-	cmdList := getCmdlist(Args[0])
+	cmdMap := getCmdlist(Args[0])
 
 	//jsondata := spew.Sdump(cmdList)
 	//fmt.Printf("===%s\n", jsondata)
@@ -292,12 +281,95 @@ func genCtrl(Args []string) {
 	//data, err := json.Marshal(fileinfo)
 	//fmt.Printf(" %s\n", data)
 	//生成 代码到目标文件
-	genCtrlCode(ctrlDir, cmdList, fileinfo)
+	genCtrlCode(ctrlDir, cmdMap, fileinfo)
 
 }
-func genCtrlCode(ctrlDir string, cmdList []string, fileinfo map[string]fileInfo) {
 
-	for _, cmd := range cmdList {
+//GitLogItem  info
+type GitLogItem struct {
+	ProtoName      string
+	LastUpdateTime uint32
+	GitLog         string
+}
+
+//ExecShell x阻塞式的执行外部shell命令的函数,等待执行完毕并返回标准输出
+func ExecShell(s string) (string, error) {
+	//函数返回一个*Cmd，用于使用给出的参数执行name指定的程序
+	cmd := exec.Command("/bin/bash", "-c", s)
+
+	//读取io.Writer类型的cmd.Stdout，再通过bytes.Buffer(缓冲byte类型的缓冲器)将byte类型转化为string类型(out.String():这是bytes类型提供的接口)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	//Run执行c包含的命令，并阻塞直到完成。  这里stdout被取出，cmd.Wait()无法正确获取stdin,stdout,stderr，则阻塞在那了
+	err := cmd.Run()
+
+	return out.String(), err
+}
+
+func genProtoGitLog(Args []string) {
+
+	//jsondata := spew.Sdump(Args)
+	//fmt.Printf("===%s\n", jsondata)
+	protoDir := Args[0]
+	gitlogfile := Args[1]
+	data, err := ioutil.ReadFile(gitlogfile)
+	gitLogMap := map[string]*GitLogItem{}
+	json.Unmarshal(data, &gitLogMap)
+
+	dir, err := ioutil.ReadDir(protoDir)
+	if err != nil {
+		fmt.Printf("扫描文件夹出错:%s\n", protoDir)
+		return
+	}
+
+	for _, fileInfo := range dir {
+		curLastUpdateTime := uint32(fileInfo.ModTime().Unix())
+
+		protoName := strings.Split(fileInfo.Name(), ".")[0]
+		arr := strings.Split(protoName, "__")
+		if len(arr) != 2 {
+			continue
+		}
+
+		gitItem, ok := gitLogMap[protoName]
+		resetFlag := false
+		if ok {
+			if gitItem.LastUpdateTime != curLastUpdateTime {
+				resetFlag = true
+			}
+		} else {
+			resetFlag = true
+		}
+
+		if resetFlag {
+
+			cmd := "cd " + protoDir + "; git log " + fileInfo.Name()
+			fmt.Println("cmd: " + cmd)
+			gitlog, _ := ExecShell(cmd)
+			item := GitLogItem{
+				LastUpdateTime: curLastUpdateTime,
+				ProtoName:      protoName,
+				GitLog:         gitlog,
+			}
+			gitLogMap[protoName] = &item
+
+		}
+
+	}
+	data, _ = json.Marshal(&gitLogMap)
+	var out bytes.Buffer
+	err = json.Indent(&out, data, "", "\t")
+
+	ioutil.WriteFile(gitlogfile, out.Bytes(), 0777)
+
+	return
+
+}
+
+func genCtrlCode(ctrlDir string, cmdMap map[string]string, fileinfo map[string]fileInfo) {
+
+	for cmd, title := range cmdMap {
 		arr := strings.Split(cmd, "__")
 		ctrl := arr[0]
 		action := arr[1]
@@ -324,7 +396,7 @@ func genCtrlCode(ctrlDir string, cmdList []string, fileinfo map[string]fileInfo)
 			fmt.Printf("gen action %s %s \n", filename, action)
 
 			actionStr := `
-// ` + camelAction + ` xx
+// ` + camelAction + ` ` + title + `
 func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto.` + camelCtrl + camelAction + `In, out *proto.` + camelCtrl + camelAction + `Out ) (interface{}, error) {
 
 	return m.outputErr(" ` + camelCtrl + camelAction + `生成代码未实现")
@@ -529,12 +601,18 @@ func main() {
 				fmt.Println(tm.Format("2006-01-02 15:04:05"))
 			},
 		}, {
-			Name: "genctrl",
-			//			Aliases: []string{"a"},
+			Name:  "genctrl",
 			Usage: "genctrl",
 
 			Action: func(c *cli.Context) {
 				genCtrl(c.Args())
+			},
+		}, {
+			Name:  "genprotogitlog",
+			Usage: "genprotogitlog",
+
+			Action: func(c *cli.Context) {
+				genProtoGitLog(c.Args())
 			},
 		}, {
 			Name: "sendf",
