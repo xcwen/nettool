@@ -213,7 +213,7 @@ type fileInfo struct {
 func getCmdlist(protoDir string) map[string]string {
 
 	cmdMap := map[string]string{}
-	data, _ := ExecShell("cd " + protoDir + " && grep __TITLE *.proto | sed  's#.proto:.*TITLE:# #' ")
+	data, _ := ExecShell("cd " + protoDir + " && grep -H __TITLE *.proto | sed  's#.proto:.*TITLE:# #' ")
 	rows := strings.Split(data, "\n")
 	for _, row := range rows {
 		items := strings.SplitN(row, " ", 2)
@@ -226,14 +226,29 @@ func getCmdlist(protoDir string) map[string]string {
 }
 
 func genCtrl(Args []string) {
-
-	cmdMap := getCmdlist(Args[0])
-
-	//jsondata := spew.Sdump(cmdList)
-	//fmt.Printf("===%s\n", jsondata)
+	protoDir := Args[0]
 	ctrlDir := Args[1]
 
-	dir, err := ioutil.ReadDir(ctrlDir)
+	dir, _ := ioutil.ReadDir(protoDir)
+	for _, fileItem := range dir {
+		if fileItem.IsDir() {
+			filename := fileItem.Name()
+			if filename != "common" {
+				os.Mkdir(ctrlDir+"/"+filename, 0644)
+				genDirCtrl(protoDir, ctrlDir, filename)
+			}
+		}
+
+	}
+
+	genDirCtrl(protoDir, ctrlDir, "")
+
+}
+func genDirCtrl(protoDir, ctrlDir, version string) {
+
+	cmdMap := getCmdlist(protoDir + "/" + version)
+
+	dir, err := ioutil.ReadDir(ctrlDir + "/" + version)
 	if err != nil {
 		fmt.Printf("扫描文件夹出错:%s\n", ctrlDir)
 		return
@@ -241,7 +256,7 @@ func genCtrl(Args []string) {
 
 	fileinfo := map[string]fileInfo{}
 	for _, filename := range dir {
-		filePath := ctrlDir + "/" + filename.Name()
+		filePath := ctrlDir + "/" + version + "/" + filename.Name()
 
 		fset := token.NewFileSet() // positions are relative to fset
 		file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
@@ -279,17 +294,16 @@ func genCtrl(Args []string) {
 		fileinfo[strings.Split(filename.Name(), ".")[0]] = fileItem
 	}
 	//data, err := json.Marshal(fileinfo)
-	//fmt.Printf(" %s\n", data)
 	//生成 代码到目标文件
-	genCtrlCode(ctrlDir, cmdMap, fileinfo)
+	genCtrlCode(ctrlDir, version, cmdMap, fileinfo)
 
 }
 
 //GitLogItem  info
 type GitLogItem struct {
-	ProtoName      string
-	LastUpdateTime uint32
-	GitLog         string
+	ProtoName      string `json:"proto_name"`
+	LastUpdateTime uint32 `json:"last_update_time"`
+	GitLog         string `json:"git_log"`
 }
 
 //ExecShell x阻塞式的执行外部shell命令的函数,等待执行完毕并返回标准输出
@@ -367,7 +381,7 @@ func genProtoGitLog(Args []string) {
 
 }
 
-func genCtrlCode(ctrlDir string, cmdMap map[string]string, fileinfo map[string]fileInfo) {
+func genCtrlCode(ctrlDir, version string, cmdMap map[string]string, fileinfo map[string]fileInfo) {
 
 	for cmd, title := range cmdMap {
 		arr := strings.Split(cmd, "__")
@@ -375,11 +389,12 @@ func genCtrlCode(ctrlDir string, cmdMap map[string]string, fileinfo map[string]f
 		action := arr[1]
 		camelAction := CamelString(action)
 		camelCtrl := CamelString(ctrl)
-		filename := ctrlDir + "/" + ctrl + ".go"
+		camelVersion := CamelString(version)
+		filename := ctrlDir + "/" + version + "/" + ctrl + ".go"
 		filedata, _ := php2go.FileGetContents(filename)
 		if filedata == "" {
 			fmt.Printf("gen %s\n", filename)
-			genCtrlBaseFile(filename, ctrl)
+			genCtrlBaseFile(filename, ctrl, version)
 		}
 		ctrlInfo, ok := fileinfo[ctrl]
 		genActionFlag := false
@@ -397,9 +412,9 @@ func genCtrlCode(ctrlDir string, cmdMap map[string]string, fileinfo map[string]f
 
 			actionStr := `
 // ` + camelAction + ` ` + title + `
-func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto.` + camelCtrl + camelAction + `In, out *proto.` + camelCtrl + camelAction + `Out ) (interface{}, error) {
+func (m * ` + camelCtrl + `)  ` + camelAction + `(ctx context.Context, in *proto.` + camelVersion + camelCtrl + camelAction + `In, out *proto.` + camelVersion + camelCtrl + camelAction + `Out ) (interface{}, error) {
 
-	return m.outputErr(" ` + camelCtrl + camelAction + `生成代码未实现")
+	return m.OutputErr(" ` + camelCtrl + camelAction + `生成代码未实现")
 }`
 			fd, _ := os.OpenFile(filename, os.O_RDWR|os.O_APPEND, 0644)
 			fd.Write([]byte(actionStr))
@@ -437,20 +452,30 @@ func CamelString(s string) string {
 	return string(data[:])
 }
 
-func genCtrlBaseFile(filename string, ctrl string) {
+func genCtrlBaseFile(filename string, ctrl, version string) {
+	packageName := "controllers"
+	importCtrl := ""
+	controllersStr := ""
+	if version != "" {
+		packageName = version
+		importCtrl = "\"server/app/controllers\""
+		controllersStr = "controllers."
+	}
+
 	camelCtrl := CamelString(ctrl)
-	str := `package controllers
+	str := `package  ` + packageName + `
 
 import (
 	"context"
 	"server/gen/proto"
+` + importCtrl + `
 
 	"github.com/TarsCloud/TarsGo/tars/util/set"
 )
 
 // ` + camelCtrl + ` x
 type ` + camelCtrl + ` struct {
-	Controller
+	 ` + controllersStr + `Controller
 }
 
 // CheckLoginFlag x
@@ -591,6 +616,18 @@ func main() {
 			},
 		},
 		{
+			Name: "json2php",
+			//			Aliases: []string{"a"},
+			Usage: "json2php",
+			Flags: []cli.Flag{
+				cli.IntFlag{},
+			},
+			Action: func(c *cli.Context) {
+				json2php(c.Args())
+			},
+		},
+
+		{
 
 			Name: "getdate",
 			//			Aliases: []string{"a"},
@@ -700,4 +737,13 @@ func Append(slice, data []byte) []byte {
 		}
 	*/
 	return slice
+}
+func echophp(indexStr string, v map[string]interface{}) {
+
+}
+func json2php(Args []string) {
+	data, _ := ioutil.ReadFile(Args[0])
+	v := map[string]interface{}{}
+	json.Unmarshal(data, v)
+
 }
